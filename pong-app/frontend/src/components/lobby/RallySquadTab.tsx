@@ -1,309 +1,389 @@
-// pong-app/frontend/src/components/RallySquadTab.tsx
-import React, { useEffect, useState } from 'react';
-import { lobbyApi, RallySquadData, useLobbyData, LeaderboardData } from '../utils/lobbyApi';
-import { LoadingSpinner } from './general/LoadingSpinner';
+import React, { useState, useEffect } from 'react';
+import { 
+  searchUsers, 
+  sendFriendRequest, 
+  respondToFriendRequest,
+  removeFriend, 
+  getFriendRequests,
+  getFriends,
+  User, 
+  Friend, 
+  FriendRequest 
+} from '../../utils/friendApi';
 
-export const RallySquadTab: React.FC = () => {
-  const [rallySquadData, setRallySquadData] = useState<RallySquadData | null>(null);
-  const [leaderboardData, setLeaderboardData] = useState<LeaderboardData | null>(null);
-  const [activeTab, setActiveTab] = useState<'friends' | 'leaderboard' | 'recent'>('friends');
-  const { isLoading, error, fetchWithErrorHandling } = useLobbyData();
+export const RallySquadTab = () => {
+  // State management
+  const [searchQuery, setSearchQuery] = useState('');
+  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSearching, setIsSearching] = useState(false);
+  const [message, setMessage] = useState('');
+  const [sentRequests, setSentRequests] = useState<string[]>([]);
 
+  // Load all data on component mount
   useEffect(() => {
-    const loadData = async () => {
-      const [rallyData, leaderData] = await Promise.all([
-        fetchWithErrorHandling(() => lobbyApi.getRallySquad()),
-        fetchWithErrorHandling(() => lobbyApi.getLeaderboard())
-      ]);
-      
-      if (rallyData) setRallySquadData(rallyData);
-      if (leaderData) setLeaderboardData(leaderData);
-    };
-
-    loadData();
+    loadAllData();
   }, []);
 
-  const handleRemoveFriend = async (friendId: string) => {
-    if (confirm('Are you sure you want to remove this friend?')) {
-      const result = await fetchWithErrorHandling(() => lobbyApi.removeFriend(friendId));
-      if (result) {
-        // Refresh the data
-        const updatedData = await fetchWithErrorHandling(() => lobbyApi.getRallySquad());
-        if (updatedData) setRallySquadData(updatedData);
-      }
+  // Live search with debouncing
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      handleLiveSearch();
+    }, 500);
+    return () => clearTimeout(timeoutId);
+  }, [searchQuery]);
+
+  // Load all data from database
+  const loadAllData = async () => {
+    setIsLoading(true);
+    try {
+      const [users, requests, friendsData] = await Promise.all([
+        searchUsers(searchQuery || ''),
+        getFriendRequests(),
+        getFriends()
+      ]);
+      setAllUsers(users);
+      setFriendRequests(requests);
+      setFriends(friendsData);
+    } catch (error) {
+      console.error('Failed to load data:', error);
+      setMessage('Failed to load data. Please try refreshing.');
+      setTimeout(() => setMessage(''), 3000);
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  if (isLoading && !rallySquadData) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <LoadingSpinner size="lg" />
-      </div>
-    );
-  }
+  // Handle live search as user types
+  const handleLiveSearch = async () => {
+    setIsSearching(true);
+    try {
+      const results = await searchUsers(searchQuery);
+      setAllUsers(results);
+    } catch (error) {
+      console.error('Live search failed:', error);
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
-  if (error && !rallySquadData) {
-    return (
-      <div className="bg-red-900 border border-red-700 text-red-100 p-4 rounded-lg">
-        <h3 className="font-bold mb-2">Error Loading Rally Squad</h3>
-        <p>{error}</p>
-        <button 
-          onClick={() => window.location.reload()} 
-          className="mt-2 bg-red-700 hover:bg-red-600 px-4 py-2 rounded"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
+  // Send friend request
+  const handleSendRequest = async (userId: string) => {
+    try {
+      await sendFriendRequest(userId);
+      setMessage('Friend request sent!');
+      setSentRequests(prev => [...prev, userId]);
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Failed to send friend request:', error);
+      setMessage('Failed to send friend request.');
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
 
-  if (!rallySquadData) {
-    return <div className="text-gray-400">No data available</div>;
-  }
+  // Accept friend request
+  const handleAcceptRequest = async (requestId: string, senderName: string) => {
+    try {
+      await respondToFriendRequest(requestId, 'accept');
+      setMessage(`You are now friends with ${senderName}!`);
+      
+      // Remove from requests and refresh friends
+      setFriendRequests(prev => prev.filter(r => r.id !== requestId));
+      
+      // Refresh friends data to get updated list
+      const updatedFriends = await getFriends();
+      setFriends(updatedFriends);
+      
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Failed to accept friend request:', error);
+      setMessage('Failed to accept friend request.');
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
 
-  const { friends, recentOpponents, onlineCount } = rallySquadData;
+  // Decline friend request
+  const handleDeclineRequest = async (requestId: string, senderName: string) => {
+    try {
+      await respondToFriendRequest(requestId, 'decline');
+      setMessage(`Declined friend request from ${senderName}.`);
+      
+      // Remove from requests immediately
+      setFriendRequests(prev => prev.filter(r => r.id !== requestId));
+      
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Failed to decline friend request:', error);
+      setMessage('Failed to decline friend request.');
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
 
-  return (
-    <div className="space-y-6">
-      {/* Header with Online Count */}
-      <div className="bg-gradient-to-r from-green-800 to-blue-800 rounded-lg p-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold text-white">Rally Squad</h2>
-            <p className="text-green-200">Connect with friends and find new opponents</p>
-          </div>
-          <div className="text-center">
-            <div className="text-3xl font-bold text-white">{onlineCount}</div>
-            <div className="text-green-200 text-sm">Players Online</div>
-          </div>
-        </div>
-      </div>
+  // Remove friend
+  const handleRemoveFriend = async (friendshipId: string, friendName: string) => {
+    if (!confirm(`Are you sure you want to remove ${friendName} as a friend?`)) return;
+    
+    try {
+      await removeFriend(friendshipId);
+      setMessage(`Removed ${friendName} from friends.`);
+      
+      // Refresh friends data
+      const updatedFriends = await getFriends();
+      setFriends(updatedFriends);
+      
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Failed to remove friend:', error);
+      setMessage('Failed to remove friend.');
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
 
-      {/* Tab Navigation */}
-      <div className="flex space-x-1 bg-gray-800 p-1 rounded-lg">
-        {[
-          { id: 'friends', label: 'Friends', icon: '👥', count: friends.length },
-          { id: 'leaderboard', label: 'Leaderboard', icon: '🏆', count: null },
-          { id: 'recent', label: 'Recent Players', icon: '🕒', count: recentOpponents.length }
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id as any)}
-            className={`flex-1 flex items-center justify-center space-x-2 py-3 px-4 rounded-md transition-colors ${
-              activeTab === tab.id
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-300 hover:text-white hover:bg-gray-700'
-            }`}
+  // Refresh all data from database
+  const handleRefresh = async () => {
+    setIsLoading(true);
+    try {
+      const [users, requests, friendsData] = await Promise.all([
+        searchUsers(searchQuery),
+        getFriendRequests(),
+        getFriends()
+      ]);
+      setAllUsers(users);
+      setFriendRequests(requests);
+      setFriends(friendsData);
+      setSentRequests([]); // Clear pending states
+      setMessage('Data refreshed successfully!');
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      console.error('Failed to refresh data:', error);
+      setMessage('Failed to refresh data.');
+      setTimeout(() => setMessage(''), 3000);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Clear search and show all users
+  const handleClearSearch = () => {
+    setSearchQuery('');
+  };
+
+  // Determine user's friend status
+  const getUserFriendStatus = (user: User) => {
+    // Check if user is already a friend
+    const friend = friends.find(f => f.id === user.id);
+    if (friend) {
+      return {
+        status: 'Accepted',
+        type: 'friend',
+        friendshipId: friend.friendshipId,
+        bgColor: 'bg-green-500'
+      };
+    }
+
+    // Check if there's an incoming friend request from this user
+    const incomingRequest = friendRequests.find(r => r.sender_username === user.name);
+    if (incomingRequest) {
+      return {
+        status: 'Incoming Request',
+        type: 'incoming',
+        requestId: incomingRequest.id,
+        senderName: user.name,
+        bgColor: 'bg-blue-500'
+      };
+    }
+
+    // Check if we sent a request to this user
+    if (sentRequests.includes(user.id)) {
+      return {
+        status: 'Pending',
+        type: 'pending',
+        bgColor: 'bg-yellow-500'
+      };
+    }
+
+    // Default: no relationship
+    return {
+      status: 'Not Connected',
+      type: 'none',
+      bgColor: 'bg-gray-500'
+    };
+  };
+
+  // Render action buttons based on user status
+  const renderActionButton = (user: User) => {
+    const friendStatus = getUserFriendStatus(user);
+
+    switch (friendStatus.type) {
+      case 'friend':
+        return (
+          <button 
+            onClick={() => handleRemoveFriend(friendStatus.friendshipId!, user.name)}
+            className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
           >
-            <span>{tab.icon}</span>
-            <span>{tab.label}</span>
-            {tab.count !== null && (
-              <span className="bg-gray-600 text-white text-xs px-2 py-1 rounded-full">
-                {tab.count}
-              </span>
-            )}
+            Remove Friend
           </button>
-        ))}
-      </div>
-
-      {/* Tab Content */}
-      {activeTab === 'friends' && (
-        <div className="bg-gray-800 rounded-lg p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-xl font-semibold text-white">Friends ({friends.length})</h3>
-            <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg">
-              + Add Friend
+        );
+      case 'incoming':
+        return (
+          <div className="flex gap-1">
+            <button 
+              onClick={() => handleAcceptRequest(friendStatus.requestId!, friendStatus.senderName!)}
+              className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-xs font-medium"
+            >
+              Accept
+            </button>
+            <button 
+              onClick={() => handleDeclineRequest(friendStatus.requestId!, friendStatus.senderName!)}
+              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-xs font-medium"
+            >
+              Decline
             </button>
           </div>
-          
-          {friends.length > 0 ? (
-            <div className="grid gap-4">
-              {friends.map((friend) => (
-                <div key={friend.id} className="flex items-center justify-between p-4 bg-gray-700 rounded-lg">
-                  <div className="flex items-center space-x-4">
-                    <div className="relative">
-                      <div className="h-12 w-12 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold">
-                        {friend.avatarUrl ? (
-                          <img 
-                            src={friend.avatarUrl} 
-                            alt={friend.name} 
-                            className="h-12 w-12 rounded-full object-cover" 
-                          />
-                        ) : (
-                          friend.name.charAt(0).toUpperCase()
-                        )}
-                      </div>
-                      {/* Online indicator (would be real-time with WebSocket) */}
-                      <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-gray-700 rounded-full"></div>
-                    </div>
-                    <div>
-                      <div className="text-white font-medium">{friend.name}</div>
-                      <div className="text-gray-400 text-sm">
-                        Friends since {new Date(friend.createdAt).toLocaleDateString()}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <button className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded text-sm">
-                      Challenge
-                    </button>
-                    <button className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm">
-                      Message
-                    </button>
-                    <button 
-                      onClick={() => handleRemoveFriend(friend.id)}
-                      className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded text-sm"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-12">
-              <div className="text-6xl mb-4">👥</div>
-              <h4 className="text-xl font-semibold text-white mb-2">No Friends Yet</h4>
-              <p className="text-gray-400 mb-6">Start building your rally squad by adding friends!</p>
-              <button className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg">
-                Find Friends
-              </button>
-            </div>
-          )}
+        );
+      case 'pending':
+        return (
+          <span className="bg-yellow-500 text-white px-4 py-2 rounded-lg text-sm font-medium">
+            Pending
+          </span>
+        );
+      case 'none':
+        return (
+          <button 
+            onClick={() => handleSendRequest(user.id)}
+            className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
+          >
+            Add Friend
+          </button>
+        );
+      default:
+        return null;
+    }
+  };
+
+  // Get status badge color for online status
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'online':
+        return 'bg-green-500 text-white';
+      case 'in-game':
+        return 'bg-yellow-500 text-black';
+      default:
+        return 'bg-gray-500 text-white';
+    }
+  };
+
+  // The component state and functions are now ready
+  // All data is fetched directly from the database
+  // No dependency on parent component props
+  
+  // You can now add your return JSX here...
+
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      {message && (
+        <div className="mb-4 p-3 bg-blue-100 text-blue-700 rounded-md text-center">
+          {message}
+          <button onClick={() => setMessage('')} className="ml-2 text-blue-500 hover:text-blue-700">×</button>
         </div>
       )}
 
-      {activeTab === 'leaderboard' && (
-        <div className="bg-gray-800 rounded-lg p-6">
-          <h3 className="text-xl font-semibold text-white mb-6">Global Leaderboard</h3>
-          
-          {leaderboardData && leaderboardData.leaderboard.length > 0 ? (
-            <div className="space-y-3">
-              {leaderboardData.leaderboard.map((player, index) => (
-                <div 
-                  key={player.id} 
-                  className={`flex items-center justify-between p-4 rounded-lg ${
-                    index === 0 ? 'bg-gradient-to-r from-yellow-800 to-yellow-600' :
-                    index === 1 ? 'bg-gradient-to-r from-gray-600 to-gray-500' :
-                    index === 2 ? 'bg-gradient-to-r from-yellow-700 to-yellow-800' :
-                    'bg-gray-700'
-                  }`}
-                >
-                  <div className="flex items-center space-x-4">
-                    <div className="flex items-center justify-center w-8 h-8 rounded-full bg-gray-600 text-white font-bold">
-                      {index + 1}
-                    </div>
-                    <div className="h-12 w-12 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold">
-                      {player.avatarUrl ? (
-                        <img 
-                          src={player.avatarUrl} 
-                          alt={player.name} 
-                          className="h-12 w-12 rounded-full object-cover" 
-                        />
-                      ) : (
-                        player.name.charAt(0).toUpperCase()
-                      )}
-                    </div>
-                    <div>
-                      <div className="text-white font-medium flex items-center space-x-2">
-                        <span>{player.name}</span>
-                        {index < 3 && (
-                          <span className="text-lg">
-                            {index === 0 ? '🥇' : index === 1 ? '🥈' : '🥉'}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-gray-300 text-sm">
-                        {player.wins} wins • {player.totalMatches} total games
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-white font-bold">{player.winRate}%</div>
-                    <div className="text-gray-300 text-sm">Win Rate</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-12">
-              <div className="text-6xl mb-4">🏆</div>
-              <h4 className="text-xl font-semibold text-white mb-2">Leaderboard Loading...</h4>
-              <p className="text-gray-400">Check back soon to see the top players!</p>
-            </div>
-          )}
+      <div className="bg-gray-800 rounded-xl p-6">
+        <h2 className="text-3xl font-bold mb-6 text-center text-purple-300">Rally Squad</h2>
+        
+        <div className="flex gap-2 mb-6">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              placeholder="Search users by name or email... (live search)"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full px-3 py-2 bg-gray-700 text-white rounded-lg placeholder-gray-400"
+            />
+            {isSearching && (
+              <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                <div className="animate-spin h-4 w-4 border-2 border-purple-500 rounded-full border-t-transparent"></div>
+              </div>
+            )}
+          </div>
+          <button 
+            onClick={() => {
+              setSearchQuery('');
+            }}
+            className="bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-lg"
+          >
+            Clear
+          </button>
+          <button 
+            onClick={handleRefresh}
+            disabled={isLoading}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white py-2 px-4 rounded-lg"
+          >
+            {isLoading ? 'Loading...' : 'Refresh'}
+          </button>
         </div>
-      )}
 
-      {activeTab === 'recent' && (
-        <div className="bg-gray-800 rounded-lg p-6">
-          <h3 className="text-xl font-semibold text-white mb-6">Recent Opponents</h3>
-          
-          {recentOpponents.length > 0 ? (
-            <div className="grid gap-4">
-              {recentOpponents.map((opponent) => (
-                <div key={opponent.id} className="flex items-center justify-between p-4 bg-gray-700 rounded-lg">
-                  <div className="flex items-center space-x-4">
-                    <div className="h-12 w-12 rounded-full bg-purple-500 flex items-center justify-center text-white font-bold">
-                      {opponent.avatarUrl ? (
-                        <img 
-                          src={opponent.avatarUrl} 
-                          alt={opponent.name} 
-                          className="h-12 w-12 rounded-full object-cover" 
-                        />
-                      ) : (
-                        opponent.name.charAt(0).toUpperCase()
-                      )}
-                    </div>
-                    <div>
-                      <div className="text-white font-medium">{opponent.name}</div>
-                      <div className="text-gray-400 text-sm">Recent opponent</div>
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <button className="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded text-sm">
-                      Rematch
-                    </button>
-                    <button className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded text-sm">
-                      Add Friend
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-center py-12">
-              <div className="text-6xl mb-4">🕒</div>
-              <h4 className="text-xl font-semibold text-white mb-2">No Recent Opponents</h4>
-              <p className="text-gray-400 mb-6">Play some matches to see your recent opponents here!</p>
-              <button className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg">
-                Find Match
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Quick Actions */}
-      <div className="bg-gray-800 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Quick Actions</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <button className="bg-green-600 hover:bg-green-700 text-white py-3 px-4 rounded-lg transition-colors flex flex-col items-center space-y-2">
-            <span className="text-2xl">⚡</span>
-            <span className="text-sm">Quick Match</span>
-          </button>
-          <button className="bg-blue-600 hover:bg-blue-700 text-white py-3 px-4 rounded-lg transition-colors flex flex-col items-center space-y-2">
-            <span className="text-2xl">🏆</span>
-            <span className="text-sm">Tournament</span>
-          </button>
-          <button className="bg-purple-600 hover:bg-purple-700 text-white py-3 px-4 rounded-lg transition-colors flex flex-col items-center space-y-2">
-            <span className="text-2xl">🔍</span>
-            <span className="text-sm">Find Players</span>
-          </button>
-          <button className="bg-orange-600 hover:bg-orange-700 text-white py-3 px-4 rounded-lg transition-colors flex flex-col items-center space-y-2">
-            <span className="text-2xl">💬</span>
-            <span className="text-sm">Chat Room</span>
-          </button>
+        <div className="bg-gray-700 rounded-xl overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-gray-600">
+              <tr>
+                <th className="text-left p-4 font-semibold w-2/5">User</th>
+                <th className="text-left p-4 font-semibold w-1/5">Online Status</th>
+                <th className="text-left p-4 font-semibold w-1/5">Friend Status</th>
+                <th className="p-4 w-1/5"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <tr>
+                  <td colSpan={4} className="p-8 text-center text-gray-400">
+                    Loading users...
+                  </td>
+                </tr>
+              ) : allUsers.length > 0 ? (
+                allUsers.map((user, index) => {
+                  const friendStatus = getUserFriendStatus(user);
+                  return (
+                    <tr key={user.id} className={index % 2 === 0 ? 'bg-gray-700' : 'bg-gray-650'}>
+                      <td className="p-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-gradient-to-r from-purple-400 to-pink-400 rounded-full flex items-center justify-center text-white font-bold">
+                            {user.name.charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <div className="font-semibold">{user.name}</div>
+                            <div className="text-sm text-gray-400">{user.email}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="p-4">
+                        <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusBadge(user.online_status || 'offline')}`}>
+                          {user.online_status || 'offline'}
+                        </span>
+                      </td>
+                      <td className="p-4">
+                        <span className={`px-3 py-1 rounded-full text-xs font-medium text-white ${friendStatus.bgColor}`}>
+                          {friendStatus.status}
+                        </span>
+                      </td>
+                      <td className="p-4 text-right">
+                        {renderActionButton(user)}
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={4} className="p-8 text-center text-gray-400">
+                    {searchQuery ? `No users found for "${searchQuery}"` : 'No users available.'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
