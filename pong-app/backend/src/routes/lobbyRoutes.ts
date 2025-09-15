@@ -1,7 +1,6 @@
-// pong-app/backend/src/routes/lobbyRoutes.ts
+// ===== BACKEND: routes/lobbyRoutes.ts =====
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { PrismaClient } from '@prisma/client';
-import { verifyToken } from '../utils/auth';
 
 interface LobbyRoutesOptions {
   prisma: PrismaClient;
@@ -9,8 +8,8 @@ interface LobbyRoutesOptions {
 
 interface AuthenticatedRequest extends FastifyRequest {
   user?: {
-    id: string;
-    email: string;
+    userId: number;
+    username: string;
   };
 }
 
@@ -26,46 +25,43 @@ export default function lobbyRoutes(fastify: FastifyInstance, options: LobbyRout
     }
 
     try {
-      const decoded = verifyToken(token) as { userId: string };
+      const decoded = fastify.jwt.verify(token) as { userId: number; username: string };
       const user = await prisma.user.findUnique({ 
         where: { id: decoded.userId },
-        select: { id: true, email: true }
+        select: { id: true, username: true }
       });
       
       if (!user) {
         return reply.status(401).send({ message: 'User not found' });
       }
       
-      (request as AuthenticatedRequest).user = user;
+      (request as AuthenticatedRequest).user = { userId: user.id, username: user.username };
     } catch (err) {
       return reply.status(401).send({ message: 'Invalid token' });
     }
   };
 
-  // Add authentication hook
   fastify.addHook('preHandler', authenticate);
 
-  // Get user overview/stats
+  // GET /lobby/overview - Real overview data from database
   fastify.get('/overview', async (request: AuthenticatedRequest, reply: FastifyReply) => {
     try {
-      const userId = request.user!.id;
+      const userId = request.user!.userId;
 
-      // Get user with basic info
+      // Get complete user data from database
       const user = await prisma.user.findUnique({
         where: { id: userId },
         select: {
           id: true,
-          name: true,
+          username: true,
           email: true,
-          avatarUrl: true,
+          profilePic: true,
+          wins: true,
+          losses: true,
+          favAvatar: true,
           createdAt: true,
-          friends: {
-            select: {
-              id: true,
-              name: true,
-              avatarUrl: true
-            }
-          }
+          isVerified: true,
+          online_status: true
         }
       });
 
@@ -73,81 +69,113 @@ export default function lobbyRoutes(fastify: FastifyInstance, options: LobbyRout
         return reply.status(404).send({ error: 'User not found' });
       }
 
-      // Get match statistics
-      const [totalMatches, wins, losses] = await Promise.all([
-        // Total matches played
-        prisma.match.count({
-          where: {
-            OR: [
-              { player1Id: userId },
-              { player2Id: userId }
-            ]
-          }
-        }),
-        // Wins
-        prisma.match.count({
-          where: { winnerId: userId }
-        }),
-        // Losses
-        prisma.match.count({
-          where: {
-            AND: [
-              {
-                OR: [
-                  { player1Id: userId },
-                  { player2Id: userId }
-                ]
-              },
-              {
-                NOT: { winnerId: userId }
-              }
-            ]
-          }
-        })
-      ]);
-
-      // Get recent matches (last 5)
-      const recentMatches = await prisma.match.findMany({
-        where: {
-          OR: [
-            { player1Id: userId },
-            { player2Id: userId }
-          ]
-        },
-        include: {
-          player1: { select: { id: true, name: true } },
-          player2: { select: { id: true, name: true } },
-          winner: { select: { id: true, name: true } }
-        },
+      // Get real recent games from database
+      const recentGames = await prisma.game.findMany({
+        where: { id_user: userId },
         orderBy: { date: 'desc' },
-        take: 5
+        take: 10
       });
 
-      const winRate = totalMatches > 0 ? ((wins / totalMatches) * 100).toFixed(1) : "0.0";
+      // Get real friends count from database
+      const friendsCount = await prisma.friendship.count({
+        where: {
+          sender_id: userId,
+          status: 'Friend'
+        }
+      });
+
+      // Process games to extract match details
+      const processedMatches = recentGames.map(game => {
+        let opponent = 'Unknown';
+        let score = 'N/A';
+        let isUserWinner = false;
+
+        try {
+          if (game.rounds_json) {
+            const rounds = JSON.parse(game.rounds_json);
+            // Extract opponent from rounds data
+            if (rounds.opponent) opponent = rounds.opponent;
+            if (rounds.opponentName) opponent = rounds.opponentName;
+            if (rounds.player2 && rounds.player2 !== user.username) opponent = rounds.player2;
+            if (rounds.player1 && rounds.player1 !== user.username) opponent = rounds.player1;
+            
+            // Extract result
+            if (rounds.winner === user.username) isUserWinner = true;
+            if (rounds.winnerId === userId) isUserWinner = true;
+            if (rounds.userWon !== undefined) isUserWinner = rounds.userWon;
+            
+            // Extract score
+            if (rounds.finalScore) score = rounds.finalScore;
+            if (rounds.score) score = rounds.score;
+          }
+        } catch (error) {
+          console.error('Error parsing rounds_json:', error);
+        }
+
+        return {
+          id: game.id_game.toString(),
+          opponent,
+          result: isUserWinner ? 'win' : 'loss',
+          score,
+          matchType: game.game_name,
+          date: game.date.toISOString(),
+          duration: '5 min', // Default duration
+          isUserWinner
+        };
+      });
+
+      // Calculate real statistics
+      const totalMatches = user.wins + user.losses;
+      const winRate = totalMatches > 0 ? parseFloat(((user.wins / totalMatches) * 100).toFixed(1)) : 0.0;
+      
+      // Calculate current win streak from recent matches
+      let currentWinStreak = 0;
+      for (const match of processedMatches) {
+        if (match.isUserWinner) {
+          currentWinStreak++;
+        } else {
+          break;
+        }
+      }
+
+      // Calculate monthly wins (games won this month)
+      const currentMonth = new Date().getMonth();
+      const currentYear = new Date().getFullYear();
+      const monthlyGames = recentGames.filter(game => {
+        const gameDate = new Date(game.date);
+        return gameDate.getMonth() === currentMonth && gameDate.getFullYear() === currentYear;
+      });
+      
+      let monthlyWins = 0;
+      monthlyGames.forEach(game => {
+        try {
+          const rounds = JSON.parse(game.rounds_json || '{}');
+          if (rounds.winner === user.username || rounds.winnerId === userId || rounds.userWon) {
+            monthlyWins++;
+          }
+        } catch (error) {
+          // Skip invalid JSON
+        }
+      });
 
       return reply.send({
         user: {
           id: user.id,
-          name: user.name,
+          name: user.username,
           email: user.email,
-          avatarUrl: user.avatarUrl,
-          memberSince: user.createdAt
+          avatarUrl: user.profilePic,
+          memberSince: user.createdAt.toISOString()
         },
         stats: {
           totalMatches,
-          wins,
-          losses,
-          winRate: parseFloat(winRate)
+          wins: user.wins,
+          losses: user.losses,
+          winRate,
+          currentWinStreak,
+          monthlyWins
         },
-        recentMatches: recentMatches.map(match => ({
-          id: match.id,
-          date: match.date,
-          player1: match.player1,
-          player2: match.player2,
-          winner: match.winner,
-          isUserWinner: match.winnerId === userId
-        })),
-        friendsCount: user.friends.length
+        recentMatches: processedMatches,
+        friendsCount
       });
 
     } catch (error) {
@@ -156,21 +184,28 @@ export default function lobbyRoutes(fastify: FastifyInstance, options: LobbyRout
     }
   });
 
-  // Get user profile (My Locker)
+  // GET /lobby/profile - Real profile data
   fastify.get('/profile', async (request: AuthenticatedRequest, reply: FastifyReply) => {
     try {
-      const userId = request.user!.id;
+      const userId = request.user!.userId;
 
       const user = await prisma.user.findUnique({
         where: { id: userId },
         select: {
           id: true,
-          name: true,
+          username: true,
           email: true,
-          avatarUrl: true,
+          profilePic: true,
+          wins: true,
+          losses: true,
+          favAvatar: true,
           isVerified: true,
           twoFactorRegistered: true,
-          createdAt: true
+          createdAt: true,
+          firstName: true,
+          lastName: true,
+          dateOfBirth: true,
+          gender: true
         }
       });
 
@@ -179,10 +214,20 @@ export default function lobbyRoutes(fastify: FastifyInstance, options: LobbyRout
       }
 
       return reply.send({
-        profile: user,
-        // Add achievements, badges, or other profile data here
-        achievements: [],
-        badges: []
+        name: user.username,
+        email: user.email,
+        profilePic: user.profilePic,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        dateOfBirth: user.dateOfBirth,
+        gender: user.gender,
+        language: 'English', // Default
+        favAvatar: user.favAvatar,
+        wins: user.wins,
+        losses: user.losses,
+        isVerified: user.isVerified,
+        twoFactorRegistered: user.twoFactorRegistered,
+        createdAt: user.createdAt.toISOString()
       });
 
     } catch (error) {
@@ -191,70 +236,267 @@ export default function lobbyRoutes(fastify: FastifyInstance, options: LobbyRout
     }
   });
 
-  // Get friends list and online players (Rally Squad)
-  fastify.get('/rally-squad', async (request: AuthenticatedRequest, reply: FastifyReply) => {
+  // GET /lobby/stats - Real user stats
+  fastify.get('/stats', async (request: AuthenticatedRequest, reply: FastifyReply) => {
     try {
-      const userId = request.user!.id;
+      const userId = request.user!.userId;
 
-      // Get user's friends
       const user = await prisma.user.findUnique({
         where: { id: userId },
-        include: {
-          friends: {
-            select: {
-              id: true,
-              name: true,
-              avatarUrl: true,
-              createdAt: true
-            }
-          },
-          friendOf: {
-            select: {
-              id: true,
-              name: true,
-              avatarUrl: true,
-              createdAt: true
-            }
-          }
-        }
+        select: { wins: true, losses: true }
       });
 
       if (!user) {
         return reply.status(404).send({ error: 'User not found' });
       }
 
-      // Get recent players (players you've played with recently)
-      const recentOpponents = await prisma.match.findMany({
-        where: {
-          OR: [
-            { player1Id: userId },
-            { player2Id: userId }
-          ]
-        },
-        include: {
-          player1: { select: { id: true, name: true, avatarUrl: true } },
-          player2: { select: { id: true, name: true, avatarUrl: true } }
-        },
+      const totalMatches = user.wins + user.losses;
+      const winRate = totalMatches > 0 ? parseFloat(((user.wins / totalMatches) * 100).toFixed(1)) : 0.0;
+
+      // Get recent games for win streak calculation
+      const recentGames = await prisma.game.findMany({
+        where: { id_user: userId },
         orderBy: { date: 'desc' },
-        take: 10
+        take: 20
       });
 
-      // Extract unique opponents
-      const opponents = new Map();
-      recentOpponents.forEach(match => {
-        const opponent = match.player1Id === userId ? match.player2 : match.player1;
-        if (opponent.id !== userId && !opponents.has(opponent.id)) {
-          opponents.set(opponent.id, opponent);
+      let currentWinStreak = 0;
+      for (const game of recentGames) {
+        try {
+          const rounds = JSON.parse(game.rounds_json || '{}');
+          if (rounds.winner === request.user!.username || rounds.winnerId === userId || rounds.userWon) {
+            currentWinStreak++;
+          } else {
+            break;
+          }
+        } catch (error) {
+          break;
+        }
+      }
+
+      // Calculate monthly wins
+      const currentMonth = new Date().getMonth();
+      const currentYear = new Date().getFullYear();
+      const monthlyGames = recentGames.filter(game => {
+        const gameDate = new Date(game.date);
+        return gameDate.getMonth() === currentMonth && gameDate.getFullYear() === currentYear;
+      });
+
+      let monthlyWins = 0;
+      monthlyGames.forEach(game => {
+        try {
+          const rounds = JSON.parse(game.rounds_json || '{}');
+          if (rounds.winner === request.user!.username || rounds.winnerId === userId || rounds.userWon) {
+            monthlyWins++;
+          }
+        } catch (error) {
+          // Skip invalid JSON
         }
       });
 
       return reply.send({
-        friends: user.friends,
-        friendRequests: [], // Implement if you add friend request system
-        recentOpponents: Array.from(opponents.values()).slice(0, 5),
-        // Note: Online status would require WebSocket integration
-        // For now, we'll just return static data
-        onlineCount: 0
+        totalMatches,
+        winRate,
+        currentWinStreak,
+        monthlyWins,
+        wins: user.wins,
+        losses: user.losses,
+        draws: 0 // Not implemented in schema
+      });
+
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to fetch stats' });
+    }
+  });
+
+  // GET /lobby/friends - Real friends data
+  fastify.get('/friends', async (request: AuthenticatedRequest, reply: FastifyReply) => {
+    try {
+      const userId = request.user!.userId;
+
+      // Get real friends from database
+      const friendships = await prisma.friendship.findMany({
+        where: {
+          sender_id: userId,
+          status: 'Friend'
+        },
+        include: {
+          receiver: {
+            select: {
+              id: true,
+              username: true,
+              profilePic: true,
+              online_status: true,
+              createdAt: true,
+              wins: true,
+              losses: true
+            }
+          }
+        }
+      });
+
+      const friends = friendships.map(friendship => ({
+        id: friendship.receiver.id,
+        name: friendship.receiver.username,
+        status: friendship.receiver.online_status,
+        rank: friendship.receiver.wins, // Using wins as rank
+        lastActive: friendship.receiver.createdAt.toISOString()
+      }));
+
+      return reply.send(friends);
+
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to fetch friends' });
+    }
+  });
+
+  // GET /lobby/recent-matches - Real recent matches
+  fastify.get('/recent-matches', async (request: AuthenticatedRequest, reply: FastifyReply) => {
+    try {
+      const userId = request.user!.userId;
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { username: true }
+      });
+
+      if (!user) {
+        return reply.status(404).send({ error: 'User not found' });
+      }
+
+      const recentGames = await prisma.game.findMany({
+        where: { id_user: userId },
+        orderBy: { date: 'desc' },
+        take: 10
+      });
+
+      const processedMatches = recentGames.map(game => {
+        let opponent = 'Unknown';
+        let score = 'N/A';
+        let isUserWinner = false;
+
+        try {
+          if (game.rounds_json) {
+            const rounds = JSON.parse(game.rounds_json);
+            
+            // Extract opponent
+            if (rounds.opponent) opponent = rounds.opponent;
+            if (rounds.opponentName) opponent = rounds.opponentName;
+            if (rounds.player2 && rounds.player2 !== user.username) opponent = rounds.player2;
+            if (rounds.player1 && rounds.player1 !== user.username) opponent = rounds.player1;
+            
+            // Extract result
+            if (rounds.winner === user.username) isUserWinner = true;
+            if (rounds.winnerId === userId) isUserWinner = true;
+            if (rounds.userWon !== undefined) isUserWinner = rounds.userWon;
+            
+            // Extract score
+            if (rounds.finalScore) score = rounds.finalScore;
+            if (rounds.score) score = rounds.score;
+          }
+        } catch (error) {
+          console.error('Error parsing rounds_json:', error);
+        }
+
+        return {
+          id: game.id_game.toString(),
+          opponent,
+          result: isUserWinner ? 'win' : 'loss',
+          score,
+          matchType: game.game_name,
+          date: game.date.toISOString(),
+          duration: '5 min'
+        };
+      });
+
+      return reply.send(processedMatches);
+
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to fetch recent matches' });
+    }
+  });
+
+  // GET /lobby/rally-squad - Real rally squad data
+  fastify.get('/rally-squad', async (request: AuthenticatedRequest, reply: FastifyReply) => {
+    try {
+      const userId = request.user!.userId;
+
+      // Get real friends
+      const friendships = await prisma.friendship.findMany({
+        where: {
+          sender_id: userId,
+          status: 'Friend'
+        },
+        include: {
+          receiver: {
+            select: {
+              id: true,
+              username: true,
+              profilePic: true,
+              online_status: true,
+              createdAt: true
+            }
+          }
+        }
+      });
+
+      const friends = friendships.map(friendship => ({
+        id: friendship.receiver.id,
+        name: friendship.receiver.username,
+        avatarUrl: friendship.receiver.profilePic,
+        createdAt: friendship.receiver.createdAt.toISOString()
+      }));
+
+      // Get recent opponents from game history
+      const recentGames = await prisma.game.findMany({
+        where: { id_user: userId },
+        orderBy: { date: 'desc' },
+        take: 20
+      });
+
+      const recentOpponents: any[] = [];
+      const seenOpponents = new Set();
+
+      for (const game of recentGames) {
+        try {
+          if (game.rounds_json) {
+            const rounds = JSON.parse(game.rounds_json);
+            let opponentName = null;
+
+            if (rounds.opponent) opponentName = rounds.opponent;
+            if (rounds.opponentName) opponentName = rounds.opponentName;
+            if (rounds.player2 && rounds.player2 !== request.user!.username) opponentName = rounds.player2;
+            if (rounds.player1 && rounds.player1 !== request.user!.username) opponentName = rounds.player1;
+
+            if (opponentName && !seenOpponents.has(opponentName)) {
+              seenOpponents.add(opponentName);
+              recentOpponents.push({
+                id: Math.random(), // Generate temp ID
+                name: opponentName,
+                avatarUrl: null,
+                createdAt: game.date.toISOString()
+              });
+
+              if (recentOpponents.length >= 5) break;
+            }
+          }
+        } catch (error) {
+          continue;
+        }
+      }
+
+      // Get real online count
+      const onlineCount = await prisma.user.count({
+        where: { online_status: 'online' }
+      });
+
+      return reply.send({
+        friends,
+        friendRequests: [],
+        recentOpponents,
+        onlineCount
       });
 
     } catch (error) {
@@ -263,56 +505,122 @@ export default function lobbyRoutes(fastify: FastifyInstance, options: LobbyRout
     }
   });
 
-  // Get match history
+  // GET /lobby/leaderboard - Real leaderboard
+  fastify.get('/leaderboard', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const topPlayers = await prisma.user.findMany({
+        select: {
+          id: true,
+          username: true,
+          profilePic: true,
+          wins: true,
+          losses: true
+        },
+        where: {
+          OR: [
+            { wins: { gt: 0 } },
+            { losses: { gt: 0 } }
+          ]
+        },
+        orderBy: [
+          { wins: 'desc' },
+          { losses: 'asc' }
+        ],
+        take: 20
+      });
+
+      const leaderboard = topPlayers.map(player => {
+        const totalMatches = player.wins + player.losses;
+        const winRate = totalMatches > 0 ? parseFloat(((player.wins / totalMatches) * 100).toFixed(1)) : 0.0;
+
+        return {
+          id: player.id,
+          name: player.username,
+          avatarUrl: player.profilePic,
+          wins: player.wins,
+          totalMatches,
+          winRate
+        };
+      });
+
+      return reply.send({ leaderboard });
+
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({ error: 'Failed to fetch leaderboard' });
+    }
+  });
+
+  // GET /lobby/match-history - Real match history with pagination
   fastify.get('/match-history', async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-      const userId = (request as AuthenticatedRequest).user!.id;
+      const userId = (request as AuthenticatedRequest).user!.userId;
       const { page = '1', limit = '10' } = request.query as { page?: string, limit?: string };
       
       const pageNum = parseInt(page);
       const limitNum = parseInt(limit);
       const skip = (pageNum - 1) * limitNum;
 
-      const [matches, totalCount] = await Promise.all([
-        prisma.match.findMany({
-          where: {
-            OR: [
-              { player1Id: userId },
-              { player2Id: userId }
-            ]
-          },
-          include: {
-            player1: { select: { id: true, name: true, avatarUrl: true } },
-            player2: { select: { id: true, name: true, avatarUrl: true } },
-            winner: { select: { id: true, name: true } }
-          },
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { username: true }
+      });
+
+      if (!user) {
+        return reply.status(404).send({ error: 'User not found' });
+      }
+
+      const [games, totalCount] = await Promise.all([
+        prisma.game.findMany({
+          where: { id_user: userId },
           orderBy: { date: 'desc' },
           skip,
           take: limitNum
         }),
-        prisma.match.count({
-          where: {
-            OR: [
-              { player1Id: userId },
-              { player2Id: userId }
-            ]
-          }
+        prisma.game.count({
+          where: { id_user: userId }
         })
       ]);
 
-      const matchHistory = matches.map(match => ({
-        id: match.id,
-        date: match.date,
-        player1: match.player1,
-        player2: match.player2,
-        winner: match.winner,
-        isUserWinner: match.winnerId === userId,
-        result: match.winnerId === userId ? 'win' : 'loss',
-        opponent: match.player1Id === userId ? match.player2 : match.player1
-      }));
+      const processedMatches = games.map(game => {
+        let opponent = 'Unknown';
+        let score = 'N/A';
+        let isUserWinner = false;
+
+        try {
+          if (game.rounds_json) {
+            const rounds = JSON.parse(game.rounds_json);
+            
+            // Extract opponent
+            if (rounds.opponent) opponent = rounds.opponent;
+            if (rounds.opponentName) opponent = rounds.opponentName;
+            if (rounds.player2 && rounds.player2 !== user.username) opponent = rounds.player2;
+            if (rounds.player1 && rounds.player1 !== user.username) opponent = rounds.player1;
+            
+            // Extract result
+            if (rounds.winner === user.username) isUserWinner = true;
+            if (rounds.winnerId === userId) isUserWinner = true;
+            if (rounds.userWon !== undefined) isUserWinner = rounds.userWon;
+            
+            // Extract score
+            if (rounds.finalScore) score = rounds.finalScore;
+            if (rounds.score) score = rounds.score;
+          }
+        } catch (error) {
+          console.error('Error parsing rounds_json:', error);
+        }
+
+        return {
+          id: game.id_game.toString(),
+          opponent,
+          result: isUserWinner ? 'win' : 'loss',
+          score,
+          playedAt: game.date.toISOString()
+        };
+      });
 
       return reply.send({
-        matches: matchHistory,
+        matches: processedMatches,
         pagination: {
           page: pageNum,
           limit: limitNum,
@@ -327,112 +635,77 @@ export default function lobbyRoutes(fastify: FastifyInstance, options: LobbyRout
     }
   });
 
-  // Get leaderboard
-  fastify.get('/leaderboard', async (request: FastifyRequest, reply: FastifyReply) => {
+  // POST /lobby/friends/add - Add friend
+  fastify.post<{ Body: { friendId: number } }>('/friends/add', async (request: AuthenticatedRequest, reply: FastifyReply) => {
     try {
-      // Get top players by win count
-      const topPlayers = await prisma.user.findMany({
-        select: {
-          id: true,
-          name: true,
-          avatarUrl: true,
-          winnerMatches: {
-            select: {
-              id: true
-            }
-          },
-          player1Matches: {
-            select: {
-              id: true
-            }
-          },
-          player2Matches: {
-            select: {
-              id: true
-            }
-          }
-        },
-        take: 10
-      });
-
-      const leaderboard = topPlayers.map(player => {
-        const wins = player.winnerMatches.length;
-        const totalMatches = player.player1Matches.length + player.player2Matches.length;
-        const winRate = totalMatches > 0 ? ((wins / totalMatches) * 100) : 0;
-
-        return {
-          id: player.id,
-          name: player.name,
-          avatarUrl: player.avatarUrl,
-          wins,
-          totalMatches,
-          winRate: parseFloat(winRate.toFixed(1))
-        };
-      }).sort((a, b) => {
-        // Sort by wins first, then by win rate
-        if (b.wins !== a.wins) return b.wins - a.wins;
-        return b.winRate - a.winRate;
-      });
-
-      return reply.send({ leaderboard });
-
-    } catch (error) {
-      fastify.log.error(error);
-      return reply.status(500).send({ error: 'Failed to fetch leaderboard' });
-    }
-  });
-
-  // Add friend
-  fastify.post<{ Body: { friendId: string } }>('/friends/add', async (request: AuthenticatedRequest, reply: FastifyReply) => {
-    try {
-      const userId = request.user!.id;
+      const userId = request.user!.userId;
       const { friendId } = request.body;
 
       if (userId === friendId) {
         return reply.status(400).send({ error: 'Cannot add yourself as friend' });
       }
 
-      // Check if friend exists
       const friend = await prisma.user.findUnique({
-        where: { id: friendId }
+        where: { id: friendId },
+        select: { id: true, username: true }
       });
 
       if (!friend) {
         return reply.status(404).send({ error: 'User not found' });
       }
 
-      // Add friend relationship (bidirectional)
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          friends: {
-            connect: { id: friendId }
+      await prisma.$transaction([
+        prisma.friendship.create({
+          data: {
+            sender_id: userId,
+            receiver_id: friendId,
+            sender_username: request.user!.username,
+            receiver_username: friend.username,
+            status: 'Friend'
           }
-        }
-      });
+        }),
+        prisma.friendship.create({
+          data: {
+            sender_id: friendId,
+            receiver_id: userId,
+            sender_username: friend.username,
+            receiver_username: request.user!.username,
+            status: 'Friend'
+          }
+        })
+      ]);
 
       return reply.send({ message: 'Friend added successfully' });
 
     } catch (error) {
+      if (error.code === 'P2002') {
+        return reply.status(400).send({ error: 'Friendship already exists' });
+      }
       fastify.log.error(error);
       return reply.status(500).send({ error: 'Failed to add friend' });
     }
   });
 
-  // Remove friend
+  // DELETE /lobby/friends/:friendId - Remove friend
   fastify.delete<{ Params: { friendId: string } }>('/friends/:friendId', async (request: AuthenticatedRequest, reply: FastifyReply) => {
     try {
-      const userId = request.user!.id;
-      const { friendId } = request.params;
+      const userId = request.user!.userId;
+      const friendId = parseInt(request.params.friendId);
 
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          friends: {
-            disconnect: { id: friendId }
+      await prisma.$transaction([
+        prisma.friendship.deleteMany({
+          where: {
+            sender_id: userId,
+            receiver_id: friendId
           }
-        }
-      });
+        }),
+        prisma.friendship.deleteMany({
+          where: {
+            sender_id: friendId,
+            receiver_id: userId
+          }
+        })
+      ]);
 
       return reply.send({ message: 'Friend removed successfully' });
 
