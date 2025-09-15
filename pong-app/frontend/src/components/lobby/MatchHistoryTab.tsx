@@ -1,5 +1,7 @@
+
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getLobbyRecentMatches, getLobbyProfile } from "../../utils/lobbyApi";
 
 interface Match {
   id: string;
@@ -235,5 +237,3 @@ export const MatchHistoryTab = () => {
     </div>
   );
 };
-
-
