@@ -161,13 +161,19 @@ import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { io, Socket } from "socket.io-client";
 import { useAuth } from "../../contexts/AuthContext";
-import { getLobbyProfile, getAvatars } from "../../utils/lobbyApi";
+import { getAvatars } from "../../utils/lobbyApi";
 import { startDuelGame } from "../../service";
 import validator from "validator";
 
 interface Player {
   socketId: string;
   name: string;
+}
+
+interface OnlineUser {
+  socketId: string;
+  name: string;
+  status?: string;
 }
 
 interface GameRoom {
@@ -192,10 +198,15 @@ export default function QuickmatchPage() {
   const [pongGames, setPongGames] = useState<GameRoom[]>([]);
   const [keyClashGames, setKeyClashGames] = useState<GameRoom[]>([]);
   
-  // Player setup state (like friend's CustomazationPage)
-  const [loggedInUsername, setLoggedInUsername] = useState("");
+  // Get username from auth context
+  const loggedInUsername = user?.username || user?.name || "";
   
-  // Initialize from localStorage (friend's approach)
+  // Game selection state
+  const [selectedGameType, setSelectedGameType] = useState<"pong" | "keyclash">("pong");
+  const [selectedMode, setSelectedMode] = useState<"local" | "remote">("local");
+  const [selectedOpponent, setSelectedOpponent] = useState<OnlineUser | null>(null);
+  
+  // Initialize from localStorage
   const [guestName, setGuestName] = useState(() => {
     return localStorage.getItem("guestName") || "";
   });
@@ -216,31 +227,18 @@ export default function QuickmatchPage() {
     return saved ? JSON.parse(saved) : null;
   });
 
-  const [gameType, setGameType] = useState<string>(() => {
-    const savedGameType = localStorage.getItem("gameType");
-    return savedGameType ? savedGameType : "pong";
-  });
-
   const [availableAvatars, setAvailableAvatars] = useState<Avatar[]>([]);
 
   let name: string | null = null;
   let playerId: string | null = null;
 
-  // Initialize user data (like friend's approach)
+  // Initialize user data
   useEffect(() => {
-    const token = localStorage.getItem("ping-pong-jwt");
-    if (token) {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      setLoggedInUsername(payload.username);
-    }
-
-    // Load avatars
     const loadAvatars = async () => {
       try {
         const avatars = await getAvatars();
         setAvailableAvatars(avatars);
         
-        // Auto-select user avatar if not already selected
         if (!userAvatar && avatars.length > 0) {
           const defaultAvatar = { name: avatars[0].id, image: avatars[0].imageUrl };
           setUserAvatar(defaultAvatar);
@@ -253,9 +251,8 @@ export default function QuickmatchPage() {
     loadAvatars();
   }, []);
 
-  // Clean up on component mount (like friend's approach)
+  // Clean up on component mount
   useEffect(() => {
-    // Clean up old game data
     localStorage.removeItem("points1");
     localStorage.removeItem("points2");
     localStorage.removeItem("points3");
@@ -263,7 +260,7 @@ export default function QuickmatchPage() {
     localStorage.removeItem("guestCount");
   }, []);
 
-  // Save guestName to localStorage (friend's approach)
+  // Save guestName to localStorage
   useEffect(() => {
     if (guestName) {
       localStorage.setItem("guestName", guestName);
@@ -280,7 +277,7 @@ export default function QuickmatchPage() {
 
     socketRef.current.on("connect", () => {
       if (user) {
-        name = user.name;
+        name = user.name || user.username;
         playerId = user.id;
       }
       socketRef.current?.emit("name", name, playerId, (res: { error: string }) => {
@@ -301,20 +298,18 @@ export default function QuickmatchPage() {
       joinGame(gameId, game, mode);
     });
 
-    // Navigation with complete state (friend's approach)
     socketRef.current.on("joined_game", (gameId, game, mode) => {
       socketRef.current?.disconnect();
       socketRef.current = null;
       const type = "1v1";
       
-      // Navigate with complete state like friend's approach
       navigate(`/${game}/${mode}/${type}/${gameId}`, {
         state: {
           user: loggedInUsername,
           guest: guestName,
           userAvatar,
           guestAvatar,
-          gameType,
+          gameType: selectedGameType,
           fromQuickMatch: true
         }
       });
@@ -324,11 +319,10 @@ export default function QuickmatchPage() {
       socketRef.current?.disconnect();
       socketRef.current = null;
     };
-  }, [user, navigate, loggedInUsername, guestName, userAvatar, guestAvatar, gameType]);
+  }, [user, navigate, loggedInUsername, guestName, userAvatar, guestAvatar, selectedGameType]);
 
-  // Avatar selection (simplified)
+  // Avatar selection
   const chooseAvatar = (target: "user" | "guest") => {
-    // For simplicity, cycle through available avatars
     const currentIndex = target === "user" 
       ? availableAvatars.findIndex(a => a.id === userAvatar?.name) 
       : availableAvatars.findIndex(a => a.id === guestAvatar?.name);
@@ -349,46 +343,57 @@ export default function QuickmatchPage() {
     }
   };
 
-  // Start game handler (exactly like friend's approach)
-  const startGameHandler = (selectedGameType: string, mode: "local" | "remote") => {
-    // Validation (like friend's validation)
-    if (!validator.isAlphanumeric(guestName)) {
-      return alert("Guest must select a valid username");
+  // Start game handler
+  const startGameHandler = () => {
+    // Validation
+    if (selectedMode === "local") {
+      if (!validator.isAlphanumeric(guestName)) {
+        return alert("Guest must select a valid username");
+      }
+      if (!userAvatar || !guestAvatar) {
+        return alert("All players must select an avatar");
+      }
+      if (!guestName) {
+        return alert("Guest must select a username");
+      }
+      if (guestName === loggedInUsername) {
+        return alert("Guest and username can't be the same");
+      }
+    } else {
+      // For remote games
+      if (!userAvatar) {
+        return alert("You must select an avatar");
+      }
+      if (!selectedOpponent) {
+        return alert("Please select an opponent to play with");
+      }
     }
 
-    if (!userAvatar || !guestAvatar) {
-      return alert("All players must select an avatar");
-    }
-
-    if (!guestName) {
-      return alert("Guest must select a username");
-    }
-
-    if (guestName === loggedInUsername) {
-      return alert("Guest and username can't be the same");
-    }
-
-    // Set and save game type
-    setGameType(selectedGameType);
     localStorage.setItem("gameType", selectedGameType);
 
-    // Call database service FIRST (friend's approach)
-    startDuelGame({
-      user: loggedInUsername,
-      userAvatar: userAvatar.name,
-      guest: guestName,
-      guestAvatar: guestAvatar.name,
-      gameType: selectedGameType,
-    })
-    .then(() => {
-      // Create game after saving to database
-      if (selectedGameType === "pong") {
-        socketRef.current?.emit("create_game", "pong", mode);
-      } else {
-        socketRef.current?.emit("create_game", "keyclash", mode);
-      }
-    })
-    .catch((err) => alert(`Failed to start game: ${err.message}`));
+    if (selectedMode === "local") {
+      startDuelGame({
+        user: loggedInUsername,
+        userAvatar: userAvatar.name,
+        guest: guestName,
+        guestAvatar: guestAvatar?.name || "",
+        gameType: selectedGameType,
+      })
+      .then(() => {
+        socketRef.current?.emit("create_game", selectedGameType, selectedMode);
+      })
+      .catch((err) => alert(`Failed to start game: ${err.message}`));
+    } else {
+      // For remote games, create game and invite opponent
+      socketRef.current?.emit("create_game", selectedGameType, selectedMode);
+      // TODO: Add invite logic here when backend supports it
+    }
+  };
+
+  const sendPlayRequest = (opponent: OnlineUser) => {
+    setSelectedOpponent(opponent);
+    // TODO: Implement actual invitation system
+    alert(`Play request sent to ${opponent.name}! (Feature coming soon)`);
   };
 
   const joinGame = (gameId: string, game: "pong" | "keyclash", mode: "local" | "remote") => {
@@ -396,6 +401,9 @@ export default function QuickmatchPage() {
       if (res.error) alert(res.error);
     });
   };
+
+  // Filter out current user from players list
+  const otherPlayers = players.filter(p => p.name !== loggedInUsername);
 
   return (
     <div className="w-full min-h-screen text-white p-8 flex flex-col items-center">
@@ -411,14 +419,82 @@ export default function QuickmatchPage() {
       </h1>
 
       <div className="w-full max-w-4xl">
-        {/* Player Setup Section (like friend's CustomazationPage) */}
+        {/* Game Type Selection */}
+        <div className="bg-gray-800 p-6 rounded-xl shadow-lg mb-6">
+          <h2 className="text-2xl font-bold mb-4 text-center">Choose Game Type</h2>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <button
+              onClick={() => setSelectedGameType("pong")}
+              className={`p-6 rounded-xl text-xl font-bold shadow-xl transition-all ${
+                selectedGameType === "pong" 
+                  ? "bg-green-600 text-white" 
+                  : "bg-gray-600 hover:bg-gray-500 text-gray-300"
+              }`}
+            >
+              🏓 Ping Pong
+            </button>
+
+            <button
+              onClick={() => setSelectedGameType("keyclash")}
+              className={`p-6 rounded-xl text-xl font-bold shadow-xl transition-all ${
+                selectedGameType === "keyclash" 
+                  ? "bg-purple-600 text-white" 
+                  : "bg-gray-600 hover:bg-gray-500 text-gray-300"
+              }`}
+            >
+              ⌨️ Key Clash
+            </button>
+          </div>
+        </div>
+
+        {/* Mode Selection */}
+        <div className="bg-gray-800 p-6 rounded-xl shadow-lg mb-6">
+          <h2 className="text-2xl font-bold mb-4 text-center">Choose Game Mode</h2>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <button
+              onClick={() => {
+                setSelectedMode("local");
+                setSelectedOpponent(null);
+              }}
+              className={`p-4 rounded-xl font-bold shadow-xl transition-all ${
+                selectedMode === "local" 
+                  ? "bg-blue-600 text-white" 
+                  : "bg-gray-600 hover:bg-gray-500 text-gray-300"
+              }`}
+            >
+              🏠 Local (Same Computer)<br/>
+              <span className="text-sm font-normal">Play with a friend on same device</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setSelectedMode("remote");
+                setSelectedOpponent(null);
+              }}
+              className={`p-4 rounded-xl font-bold shadow-xl transition-all ${
+                selectedMode === "remote" 
+                  ? "bg-orange-600 text-white" 
+                  : "bg-gray-600 hover:bg-gray-500 text-gray-300"
+              }`}
+            >
+              🌐 Remote (Online)<br/>
+              <span className="text-sm font-normal">Play with others online</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Player Setup Section - Shows for both local and remote */}
         <div className="bg-gray-800 p-6 rounded-xl shadow-lg mb-8">
-          <h2 className="text-2xl font-bold mb-6 text-center">Choose Players & Avatars</h2>
+          <h2 className="text-2xl font-bold mb-6 text-center">
+            {selectedMode === "local" ? "Choose Players & Avatars" : "Choose Your Opponent"}
+          </h2>
           
           <div className="flex flex-col lg:flex-row gap-8 items-center">
-            {/* Player 1 */}
+            {/* Player 1 - Always the same */}
             <div className="bg-gray-700 p-6 w-full lg:w-1/2 rounded-xl shadow-lg flex flex-col items-center">
-              <h3 className="text-2xl font-bold mb-2">👤 Player 1</h3>
+              <h3 className="text-2xl font-bold mb-2">👤 Player 1 (You)</h3>
               <p className="mb-4 text-lg">
                 Username: <strong>{loggedInUsername}</strong>
               </p>
@@ -447,144 +523,195 @@ export default function QuickmatchPage() {
             {/* VS Separator */}
             <div className="text-4xl font-bold text-yellow-400">VS</div>
 
-            {/* Player 2 (Guest) */}
+            {/* Player 2 - Different based on mode */}
             <div className="bg-gray-700 p-6 w-full lg:w-1/2 rounded-xl shadow-lg flex flex-col items-center">
-              <h3 className="text-2xl font-bold mb-2">👥 Player 2 (Guest)</h3>
-
-              <input
-                type="text"
-                placeholder="Enter guest username"
-                value={guestName}
-                onChange={(e) => setGuestName(e.target.value)}
-                className="mb-4 px-4 py-2 rounded text-pink-400 font-bold w-full max-w-sm text-center"
-              />
-
-              {guestAvatar ? (
+              {selectedMode === "local" ? (
+                // Local Mode: Guest Player Input
                 <>
-                  <img
-                    src={guestAvatar.image}
-                    alt={guestAvatar.name}
-                    className="w-32 h-32 rounded-full border-4 border-pink-400 mb-2 object-cover"
+                  <h3 className="text-2xl font-bold mb-2">👥 Player 2 (Guest)</h3>
+
+                  <input
+                    type="text"
+                    placeholder="Enter guest username"
+                    value={guestName}
+                    onChange={(e) => setGuestName(e.target.value)}
+                    className="mb-4 px-4 py-2 rounded text-pink-400 font-bold w-full max-w-sm text-center"
                   />
-                  <p className="capitalize mb-4">{guestAvatar.name}</p>
+
+                  {guestAvatar ? (
+                    <>
+                      <img
+                        src={guestAvatar.image}
+                        alt={guestAvatar.name}
+                        className="w-32 h-32 rounded-full border-4 border-pink-400 mb-2 object-cover"
+                      />
+                      <p className="capitalize mb-4">{guestAvatar.name}</p>
+                    </>
+                  ) : (
+                    <p className="mb-4 italic text-gray-400">No avatar selected</p>
+                  )}
+
+                  <button
+                    onClick={() => chooseAvatar("guest")}
+                    className="bg-pink-600 hover:bg-pink-700 px-4 py-2 rounded-lg font-semibold"
+                  >
+                    Choose Avatar
+                  </button>
                 </>
               ) : (
-                <p className="mb-4 italic text-gray-400">No avatar selected</p>
+                // Remote Mode: Online Players List
+                <>
+                  <h3 className="text-2xl font-bold mb-4">🌐 Choose Opponent</h3>
+                  
+                  {selectedOpponent ? (
+                    // Show selected opponent
+                    <div className="text-center">
+                      <div className="w-20 h-20 bg-gradient-to-r from-green-400 to-blue-500 rounded-full flex items-center justify-center text-white font-bold text-2xl mb-2">
+                        {selectedOpponent.name.charAt(0).toUpperCase()}
+                      </div>
+                      <p className="font-bold text-lg mb-2">{selectedOpponent.name}</p>
+                      <p className="text-green-400 text-sm mb-4">Selected Opponent</p>
+                      <button
+                        onClick={() => setSelectedOpponent(null)}
+                        className="bg-gray-600 hover:bg-gray-700 px-3 py-1 rounded text-sm"
+                      >
+                        Change Opponent
+                      </button>
+                    </div>
+                  ) : (
+                    // Show online players list
+                    <div className="w-full">
+                      <p className="text-center text-gray-400 mb-4">
+                        Online Players ({otherPlayers.length})
+                      </p>
+                      
+                      <div className="max-h-60 overflow-y-auto space-y-2">
+                        {otherPlayers.length > 0 ? (
+                          otherPlayers.map(player => (
+                            <div key={player.socketId} className="flex items-center justify-between bg-gray-600 p-3 rounded-lg">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-gradient-to-r from-purple-400 to-pink-400 rounded-full flex items-center justify-center text-white font-bold">
+                                  {player.name.charAt(0).toUpperCase()}
+                                </div>
+                                <div>
+                                  <p className="font-semibold">{player.name}</p>
+                                  <p className="text-xs text-green-400">• Online</p>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => sendPlayRequest(player)}
+                                className="bg-green-600 hover:bg-green-700 px-3 py-1 rounded text-sm font-medium"
+                              >
+                                Invite to Play
+                              </button>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-center text-gray-400 py-8">
+                            <p className="text-4xl mb-2">👻</p>
+                            <p>No other players online</p>
+                            <p className="text-sm mt-1">Share the game with friends!</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
-
-              <button
-                onClick={() => chooseAvatar("guest")}
-                className="bg-pink-600 hover:bg-pink-700 px-4 py-2 rounded-lg font-semibold"
-              >
-                Choose Avatar
-              </button>
             </div>
           </div>
         </div>
 
-        {/* Game Selection (like friend's approach) */}
+        {/* Start Game Button */}
         <div className="bg-gray-800 p-6 rounded-xl shadow-lg mb-8">
-          <h2 className="text-2xl font-bold mb-6 text-center">Choose Game Type</h2>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="text-center">
             <button
-              className="bg-green-600 hover:bg-green-700 p-8 rounded-xl text-2xl font-bold shadow-xl"
-              onClick={() => startGameHandler("pong", "local")}
+              onClick={startGameHandler}
+              disabled={selectedMode === "remote" && !selectedOpponent}
+              className={`p-6 rounded-xl text-2xl font-bold shadow-xl transition-all ${
+                selectedMode === "remote" && !selectedOpponent
+                  ? "bg-gray-600 text-gray-400 cursor-not-allowed"
+                  : "bg-gradient-to-r from-green-500 to-blue-500 hover:from-green-600 hover:to-blue-600"
+              }`}
             >
-              🏓 Start Ping Pong
-            </button>
-
-            <button
-              onClick={() => startGameHandler("keyclash", "local")}
-              className="bg-purple-600 hover:bg-purple-700 p-8 rounded-xl text-2xl font-bold shadow-xl"
-            >
-              ⌨️ Start Key Clash
+              🚀 Start {selectedGameType === "pong" ? "Ping Pong" : "Key Clash"} 
+              {selectedMode === "remote" && selectedOpponent && (
+                <div className="text-lg font-normal">vs {selectedOpponent.name}</div>
+              )}
             </button>
           </div>
         </div>
 
-        {/* Lobby Information */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Players Online */}
-          <div className="bg-gray-800 rounded-xl p-6">
-            <h3 className="text-xl font-semibold mb-4">Players Online ({players.length})</h3>
-            <div className="space-y-2 max-h-40 overflow-y-auto">
-              {players.map(p => (
-                <div key={p.socketId} className="bg-gray-700 px-3 py-2 rounded flex items-center">
-                  <div className="w-2 h-2 bg-green-400 rounded-full mr-3"></div>
-                  <span>{p.name}</span>
-                  {p.socketId === user?.id && <span className="ml-2 text-blue-400 text-xs">(You)</span>}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Pong Games */}
-          <div className="bg-gray-800 rounded-xl p-6">
-            <h3 className="text-xl font-semibold mb-4">🏓 Pong Games</h3>
-            <div className="space-y-2 max-h-40 overflow-y-auto">
-              {pongGames.map(game => (
-                <div
-                  key={game.id}
-                  onClick={() => {
-                    if (game.status === "waiting") joinGame(game.id, "pong", "remote");
-                  }}
-                  className={`p-3 rounded border cursor-pointer ${
-                    game.status === "waiting" 
-                      ? "bg-green-900 border-green-600 hover:bg-green-800" 
-                      : "bg-gray-700 border-gray-600"
-                  }`}
-                >
-                  <div className="text-sm font-medium">Room-{game.id}</div>
-                  <div className="text-xs text-gray-400">
-                    {game.players.length}/2 players • {game.status}
-                  </div>
-                  {game.players.length > 0 && (
-                    <div className="text-xs mt-1">
-                      {game.players.map(p => p.name).join(", ")}
+        {/* Existing Games - Only show for remote mode */}
+        {selectedMode === "remote" && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Pong Games */}
+            <div className="bg-gray-800 rounded-xl p-6">
+              <h3 className="text-xl font-semibold mb-4">🏓 Available Pong Games</h3>
+              <div className="space-y-2 max-h-40 overflow-y-auto">
+                {pongGames.map(game => (
+                  <div
+                    key={game.id}
+                    onClick={() => {
+                      if (game.status === "waiting") joinGame(game.id, "pong", "remote");
+                    }}
+                    className={`p-3 rounded border cursor-pointer ${
+                      game.status === "waiting" 
+                        ? "bg-green-900 border-green-600 hover:bg-green-800" 
+                        : "bg-gray-700 border-gray-600"
+                    }`}
+                  >
+                    <div className="text-sm font-medium">Room-{game.id}</div>
+                    <div className="text-xs text-gray-400">
+                      {game.players.length}/2 players • {game.status}
                     </div>
-                  )}
-                </div>
-              ))}
-              {pongGames.length === 0 && (
-                <p className="text-gray-400 text-sm">No active games</p>
-              )}
-            </div>
-          </div>
-
-          {/* Key Clash Games */}
-          <div className="bg-gray-800 rounded-xl p-6">
-            <h3 className="text-xl font-semibold mb-4">⌨️ Key Clash Games</h3>
-            <div className="space-y-2 max-h-40 overflow-y-auto">
-              {keyClashGames.map(game => (
-                <div
-                  key={game.id}
-                  onClick={() => {
-                    if (game.status === "waiting") joinGame(game.id, "keyclash", "remote");
-                  }}
-                  className={`p-3 rounded border cursor-pointer ${
-                    game.status === "waiting" 
-                      ? "bg-purple-900 border-purple-600 hover:bg-purple-800" 
-                      : "bg-gray-700 border-gray-600"
-                  }`}
-                >
-                  <div className="text-sm font-medium">Room-{game.id}</div>
-                  <div className="text-xs text-gray-400">
-                    {game.players.length}/2 players • {game.status}
+                    {game.players.length > 0 && (
+                      <div className="text-xs mt-1">
+                        {game.players.map(p => p.name).join(", ")}
+                      </div>
+                    )}
                   </div>
-                  {game.players.length > 0 && (
-                    <div className="text-xs mt-1">
-                      {game.players.map(p => p.name).join(", ")}
+                ))}
+                {pongGames.length === 0 && (
+                  <p className="text-gray-400 text-sm">No active games</p>
+                )}
+              </div>
+            </div>
+
+            {/* Key Clash Games */}
+            <div className="bg-gray-800 rounded-xl p-6">
+              <h3 className="text-xl font-semibold mb-4">⌨️ Available Key Clash Games</h3>
+              <div className="space-y-2 max-h-40 overflow-y-auto">
+                {keyClashGames.map(game => (
+                  <div
+                    key={game.id}
+                    onClick={() => {
+                      if (game.status === "waiting") joinGame(game.id, "keyclash", "remote");
+                    }}
+                    className={`p-3 rounded border cursor-pointer ${
+                      game.status === "waiting" 
+                        ? "bg-purple-900 border-purple-600 hover:bg-purple-800" 
+                        : "bg-gray-700 border-gray-600"
+                    }`}
+                  >
+                    <div className="text-sm font-medium">Room-{game.id}</div>
+                    <div className="text-xs text-gray-400">
+                      {game.players.length}/2 players • {game.status}
                     </div>
-                  )}
-                </div>
-              ))}
-              {keyClashGames.length === 0 && (
-                <p className="text-gray-400 text-sm">No active games</p>
-              )}
+                    {game.players.length > 0 && (
+                      <div className="text-xs mt-1">
+                        {game.players.map(p => p.name).join(", ")}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {keyClashGames.length === 0 && (
+                  <p className="text-gray-400 text-sm">No active games</p>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
