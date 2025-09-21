@@ -211,6 +211,27 @@ const PlayPage: React.FC = () => {
     }
   };
 
+  // ========== NAVIGATION TO LOBBY ==========
+  const navigateToLobby = () => {
+    // Clean up game instances before navigating
+    if (pongInstance.current) {
+      pongInstance.current.dispose?.();
+      pongInstance.current = null; 
+    }
+    
+    if (gameCleanupRef.current) {
+      gameCleanupRef.current();
+      gameCleanupRef.current = null;
+    }
+    
+    // Clear game state if game hasn't ended naturally
+    if (!gameHasEnded) {
+      clearGameState();
+    }
+    
+    navigate("/lobby");
+  };
+
   // ========== CANCEL GAME LOGIC ==========
   const saveCancelResult = async (losingPlayer: string, winningPlayer: string) => {
     try {
@@ -488,13 +509,24 @@ const PlayPage: React.FC = () => {
     };
   }, []);
 
-  // Determine if cancel button should be shown
+  // Determine which buttons to show based on game status
   const showCancelButton = gameStatus === "in-progress" || gameStatus === "paused";
+  const showBackToLobbyButton = gameStatus === "waiting" || gameStatus === "finished";
 
   if (game === "pong") {
     return (
       <div className="relative w-full h-full">
-        {/* Cancel Button Overlay - Only show during active gameplay */}
+        {/* Back to Lobby Button - Only show during waiting and finished */}
+        {showBackToLobbyButton && (
+          <button
+            onClick={navigateToLobby}
+            className="absolute top-4 left-4 z-50 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium shadow-lg transition-all duration-200"
+          >
+            🏠 Back to Lobby
+          </button>
+        )}
+
+        {/* Cancel Button - Only show during active gameplay */}
         {showCancelButton && (
           <button
             onClick={() => setShowCancelModal(true)}
@@ -569,7 +601,17 @@ const PlayPage: React.FC = () => {
   } else if (game === "keyclash") {
     return (
       <div className="relative w-full h-full">
-        {/* Cancel Button Overlay - Only show during active gameplay */}
+        {/* Back to Lobby Button - Only show during waiting and finished */}
+        {showBackToLobbyButton && (
+          <button
+            onClick={navigateToLobby}
+            className="absolute top-4 left-4 z-50 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium shadow-lg transition-all duration-200"
+          >
+            🏠 Back to Lobby
+          </button>
+        )}
+
+        {/* Cancel Button - Only show during active gameplay */}
         {showCancelButton && (
           <button
             onClick={() => setShowCancelModal(true)}
