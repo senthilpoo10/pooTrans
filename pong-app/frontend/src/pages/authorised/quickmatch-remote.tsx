@@ -1370,6 +1370,13 @@ export default function QuickmatchRemotePage() {
         if (activeGameInfo) {
           console.log("✅ Game ended - clearing UI state");
           setActiveGameInfo(null);
+          
+          // MINIMAL CHANGE: Clear selected opponent when game ends (just like the banner)
+          setSelectedOpponent(null);
+          setPairedGameType(null);
+          localStorage.removeItem("pairingData");
+          
+          console.log("🧹 Cleared selected opponent automatically after game end");
         }
       }
     };
@@ -2334,4 +2341,3 @@ export default function QuickmatchRemotePage() {
     </div>
   );
 }
-
